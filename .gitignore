@@ -1,1 +1,5 @@
 /claude-limits
+identities.json
+accounts.json
+*.token
+.env
