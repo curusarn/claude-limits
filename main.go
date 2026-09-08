@@ -27,7 +27,8 @@ import (
 	"sync"
 )
 
-const version = "0.1.0"
+// injected at release time via -ldflags -X main.version=...; "dev" for local builds
+var version = "dev"
 
 func main() {
 	args := os.Args[1:]
