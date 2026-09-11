@@ -9,7 +9,8 @@ package main
 //     whoever refreshes MUST persist the new pair or the account is lost.
 //   - Claude Code stores its creds in the macOS Keychain, service
 //     "Claude Code-credentials", as {"claudeAiOauth":{accessToken,refreshToken,expiresAt,...}}.
-//     ~/.claude/.credentials.json mirrors it (keychain copy is authoritative).
+//     ~/.claude/.credentials.json is a plaintext FALLBACK written only when the
+//     keychain write fails (verified in Claude Code 2.1.267) - it can be stale.
 //
 // Because refresh rotates, the account you're CURRENTLY logged into (its email
 // matches this machine's keychain) is read LIVE and never refreshed by the tool
@@ -67,13 +68,14 @@ func (a Account) key() string {
 
 // Creds is the on-disk per-account credential store (creds/<name>.json, 0600).
 type Creds struct {
-	AccessToken           string `json:"accessToken"`
-	RefreshToken          string `json:"refreshToken"`
-	ExpiresAt             int64  `json:"expiresAt"`                       // unix ms
-	RefreshTokenExpiresAt int64  `json:"refreshTokenExpiresAt,omitempty"` // unix ms
-	Email                 string `json:"email,omitempty"`
-	RateLimitTier         string `json:"rateLimitTier,omitempty"`
-	SubscriptionType      string `json:"subscriptionType,omitempty"`
+	AccessToken           string   `json:"accessToken"`
+	RefreshToken          string   `json:"refreshToken"`
+	ExpiresAt             int64    `json:"expiresAt"`                       // unix ms
+	RefreshTokenExpiresAt int64    `json:"refreshTokenExpiresAt,omitempty"` // unix ms
+	Email                 string   `json:"email,omitempty"`
+	Scopes                []string `json:"scopes,omitempty"` // kept verbatim so `switch` can write the blob back
+	RateLimitTier         string   `json:"rateLimitTier,omitempty"`
+	SubscriptionType      string   `json:"subscriptionType,omitempty"`
 }
 
 func configDir() string {
@@ -395,7 +397,7 @@ func parseClaudeCodeBlob(raw []byte) *Creds {
 		AccessToken: o.AccessToken, RefreshToken: o.RefreshToken,
 		ExpiresAt: o.ExpiresAt, RefreshTokenExpiresAt: o.RefreshTokenExpiresAt,
 		RateLimitTier: o.RateLimitTier, SubscriptionType: o.SubscriptionType,
-		Email: o.Email,
+		Email: o.Email, Scopes: o.Scopes,
 	}
 }
 
@@ -427,6 +429,7 @@ type refreshResponse struct {
 	RefreshToken          string `json:"refresh_token"`
 	ExpiresIn             int64  `json:"expires_in"`
 	RefreshTokenExpiresIn int64  `json:"refresh_token_expires_in"`
+	Scope                 string `json:"scope"` // space-separated
 	Account               struct {
 		EmailAddress string `json:"email_address"`
 	} `json:"account"`
@@ -458,6 +461,12 @@ func refreshCreds(c *Creds) error {
 	if err := json.Unmarshal(data, &rr); err != nil {
 		return fmt.Errorf("token refresh: bad response: %w", err)
 	}
+	applyRefresh(c, rr)
+	return nil
+}
+
+// applyRefresh folds a token response into the stored pair.
+func applyRefresh(c *Creds, rr refreshResponse) {
 	now := time.Now().UnixMilli()
 	c.AccessToken = rr.AccessToken
 	if rr.RefreshToken != "" {
@@ -467,11 +476,13 @@ func refreshCreds(c *Creds) error {
 	if rr.RefreshTokenExpiresIn > 0 {
 		c.RefreshTokenExpiresAt = now + rr.RefreshTokenExpiresIn*1000
 	}
+	if rr.Scope != "" {
+		c.Scopes = strings.Fields(rr.Scope)
+	}
 	if rr.Account.EmailAddress != "" {
 		c.Email = rr.Account.EmailAddress
 		memoizeEmail(c.AccessToken, c.Email) // refresh response IS the API's identity answer
 	}
-	return nil
 }
 
 // getCreds resolves an account to a usable access token and reports whether the

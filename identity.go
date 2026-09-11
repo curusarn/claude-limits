@@ -33,33 +33,54 @@ import (
 
 const profileURL = "https://api.anthropic.com/api/oauth/profile"
 
+// oauthProfile is what Claude Code keeps in ~/.claude.json's oauthAccount
+// (the parts a login switch must rewrite).
+type oauthProfile struct {
+	Email       string
+	AccountUUID string
+	OrgUUID     string
+}
+
 func fetchProfileEmail(accessToken string) (string, error) {
+	p, err := fetchProfile(accessToken)
+	if err != nil {
+		return "", err
+	}
+	return p.Email, nil
+}
+
+func fetchProfile(accessToken string) (oauthProfile, error) {
 	req, _ := http.NewRequest("GET", profileURL, nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("User-Agent", "claude-code/"+claudeVersion())
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return oauthProfile{}, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != 200 {
-		return "", &httpError{resp.StatusCode, fmt.Sprintf("profile API: HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))}
+		return oauthProfile{}, &httpError{resp.StatusCode, fmt.Sprintf("profile API: HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))}
 	}
 	var p struct {
 		Account struct {
+			UUID         string `json:"uuid"`
 			Email        string `json:"email"`
 			EmailAddress string `json:"email_address"`
 		} `json:"account"`
+		Organization struct {
+			UUID string `json:"uuid"`
+		} `json:"organization"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return "", fmt.Errorf("profile API: bad response: %w", err)
+		return oauthProfile{}, fmt.Errorf("profile API: bad response: %w", err)
 	}
-	if p.Account.Email != "" {
-		return p.Account.Email, nil
+	email := p.Account.Email
+	if email == "" {
+		email = p.Account.EmailAddress
 	}
-	return p.Account.EmailAddress, nil
+	return oauthProfile{Email: email, AccountUUID: p.Account.UUID, OrgUUID: p.Organization.UUID}, nil
 }
 
 // jwtEmail best-effort extracts an email claim if the token is a JWT.

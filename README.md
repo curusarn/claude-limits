@@ -45,6 +45,7 @@ tracked too. Keep going until all your accounts are in. No per-account
 copy-pasting, no tokens to manage. Each account, once added, shows forever.
 
 ```sh
+claude-limits switch                              # switch Claude Code to another added account (no browser login)
 claude-limits --json                              # machine-readable
 claude-limits --fresh                             # bypass the cache
 claude-limits --account claude@example.com        # just one account (by email)
@@ -86,6 +87,37 @@ verified against the API from that account's own token (`GET
 the login from `~/.claude.json`, which can lag the real credentials by a whole
 login - a machine can hold one account's tokens while that file still names a
 different account.
+
+## Switching Claude Code between accounts without a browser login
+
+```sh
+claude-limits switch                     # shows the limits, then an arrow-key menu
+claude-limits switch claude@example.com  # or straight to one by email
+```
+
+`switch` with no email first prints the usual side-by-side limits (so you pick
+by how much each account has left), then shows an arrow-key menu (↑/↓ or j/k,
+Enter to select, Esc to cancel).
+
+Since the tool already holds a live token pair for every added account, it can
+hand one to Claude Code directly: it syncs the outgoing login's fresh pair to
+its store, verifies the target's stored pair against the API (refreshing it if
+needed), writes it into the keychain item Claude Code reads, and rewrites the
+account identity in `~/.claude.json`. No `/login`, no browser.
+
+This is safe with sessions already running, verified against Claude Code's
+own source (2.1.267): before every token refresh Claude Code re-reads the
+keychain under a lock and, if the token there differs from the one in memory,
+it adopts the keychain token instead of refreshing. So an old session never
+rotates the old account's refresh token over the new one. New sessions use
+the new account immediately; running ones move over at their next token check
+(at the latest when their access token expires) - all sessions on the machine
+share the one login.
+
+Claude Code refetches the profile behind `/status` only when it is older than
+24h, so the tool rewrites `oauthAccount` (email, account and organization ids)
+in `~/.claude.json` and drops the fetch timestamp to force a refetch on next
+start.
 
 ### Adding an account from a DIFFERENT machine (advanced)
 
@@ -157,4 +189,7 @@ last good response is shown clearly labeled `⚠ stale`.
   printed, logged, or sent anywhere except `api.anthropic.com` /
   `platform.claude.com`.
 - The account you're currently logged into is read-only against Claude Code's
-  keychain entry - the tool never rotates the token Claude Code owns.
+  keychain entry - the tool never rotates the token Claude Code owns. The only
+  keychain write is `switch`, which replaces the item with another added
+  account's verified pair using the same `security add-generic-password -U`
+  call Claude Code itself uses (same item, same ACL, no prompt).

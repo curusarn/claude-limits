@@ -40,6 +40,8 @@ func main() {
 			os.Exit(cmdRemoveAccount(args[1:]))
 		case "accounts":
 			os.Exit(cmdAccounts())
+		case "switch":
+			os.Exit(cmdSwitch(args[1:]))
 		case "extract": // secondary: emit this login's blob for another machine
 			os.Exit(cmdExtract(args[1:]))
 		case "help", "--help", "-h":
@@ -59,6 +61,9 @@ func printHelp() {
   claude-limits            show usage for every account you've added, plus the
                            account this machine is logged into right now
   claude-limits add        add the account this machine is CURRENTLY logged into
+  claude-limits switch     show the limits, then switch Claude Code to another
+                           added account (arrow keys, or pass the email) - no
+                           browser login
 
 Add your accounts one at a time: run 'add', switch Claude Code to the next
 account, run 'add' again. They accumulate and each stays tracked forever - the
@@ -83,11 +88,18 @@ func cmdShow(args []string) int {
 	fresh := fs.Bool("fresh", false, "bypass the on-disk cache")
 	only := fs.String("account", "", "show only this account (email)")
 	fs.Parse(args)
+	_, _, code := showUsage(*jsonOut, *fresh, *only)
+	return code
+}
 
+// showUsage is the default view: load + migrate accounts, fetch every account
+// concurrently, render. It hands back the accounts and current login so a
+// caller (`switch`) can continue without re-resolving them.
+func showUsage(jsonOut, fresh bool, only string) ([]Account, localLogin, int) {
 	accs, err := loadAccounts()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+		return nil, localLogin{}, 1
 	}
 	cur := currentLogin()
 	accs = migrateAccounts(accs, cur) // one-time: legacy shapes -> email-keyed stored
@@ -96,22 +108,22 @@ func cmdShow(args []string) int {
 	if cur.email != "" && !containsEmail(accs, cur.email) {
 		accs = append(accs, Account{Source: "stored", Email: cur.email, Unadded: true})
 	}
-	if *only != "" {
+	if only != "" {
 		var filtered []Account
 		for _, a := range accs {
-			if a.Email == *only || a.LegacyName == *only {
+			if a.Email == only || a.LegacyName == only {
 				filtered = append(filtered, a)
 			}
 		}
 		if len(filtered) == 0 {
-			fmt.Fprintf(os.Stderr, "error: no account named %q (see `claude-limits accounts`)\n", *only)
-			return 1
+			fmt.Fprintf(os.Stderr, "error: no account named %q (see `claude-limits accounts`)\n", only)
+			return nil, cur, 1
 		}
 		accs = filtered
 	}
 	if len(accs) == 0 {
 		fmt.Fprintln(os.Stderr, "No accounts. Log into Claude Code, then run `claude-limits add`.")
-		return 1
+		return nil, cur, 1
 	}
 
 	// fetch accounts concurrently - each is one HTTP GET (or a cache read)
@@ -121,24 +133,25 @@ func cmdShow(args []string) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = collect(acc, cur, *fresh)
+			results[i] = collect(acc, cur, fresh)
 		}()
 	}
 	wg.Wait()
 
-	if *jsonOut {
+	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(results)
 	} else {
 		render(results)
 	}
+	code := 0
 	for _, r := range results {
 		if r.Err != "" && r.Limits == nil {
-			return 1
+			code = 1
 		}
 	}
-	return 0
+	return accs, cur, code
 }
 
 func cmdAccounts() int {
@@ -350,6 +363,7 @@ func cmdExtract(args []string) int {
 		"refreshTokenExpiresAt": c.RefreshTokenExpiresAt,
 		"subscriptionType":      c.SubscriptionType,
 		"rateLimitTier":         c.RateLimitTier,
+		"scopes":                c.Scopes,
 		"email":                 c.Email,
 	}})
 	who := c.Email
