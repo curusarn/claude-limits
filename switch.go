@@ -181,6 +181,14 @@ func cmdSwitch(args []string) int {
 	if target == "" {
 		var err error
 		target, err = pickAccount(emails, cur.email)
+		if errors.Is(err, errCancelled) {
+			if cur.email != "" {
+				fmt.Fprintln(os.Stderr, "cancelled - Claude Code is still logged in as", cur.email)
+			} else {
+				fmt.Fprintln(os.Stderr, "cancelled - nothing changed")
+			}
+			return 0
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
@@ -264,6 +272,10 @@ func cmdSwitch(args []string) int {
 	return 0
 }
 
+// errCancelled means the user backed out of the interactive pick (esc/q/ctrl-c
+// or no selection) - a normal choice, not a failure.
+var errCancelled = errors.New("cancelled")
+
 // pickAccount is an arrow-key menu on /dev/tty (so it works with stdout
 // piped). Raw mode via stty - no terminal dependency. Enter selects; Esc, q or
 // Ctrl-C cancel; j/k also move.
@@ -317,7 +329,7 @@ func pickAccount(emails []string, current string) (string, error) {
 	for {
 		n, err := tty.Read(buf)
 		if err != nil || n == 0 {
-			return "", errors.New("no selection")
+			return "", errCancelled
 		}
 		switch {
 		case n >= 3 && buf[0] == 0x1b && buf[1] == '[' && buf[2] == 'A', n == 1 && buf[0] == 'k':
@@ -329,7 +341,7 @@ func pickAccount(emails []string, current string) (string, error) {
 			return emails[sel], nil
 		case n == 1 && (buf[0] == 0x1b || buf[0] == 'q' || buf[0] == 3):
 			w("\r\n")
-			return "", errors.New("cancelled")
+			return "", errCancelled
 		default:
 			continue
 		}
