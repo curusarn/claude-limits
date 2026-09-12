@@ -34,11 +34,24 @@ import (
 const profileURL = "https://api.anthropic.com/api/oauth/profile"
 
 // oauthProfile is what Claude Code keeps in ~/.claude.json's oauthAccount
-// (the parts a login switch must rewrite).
+// (the parts a login switch must rewrite), plus the subscription/tier fields the
+// header renders. Tier/subscription come straight from the profile's
+// organization block, the same source Claude Code uses (its `rrn`).
 type oauthProfile struct {
-	Email       string
-	AccountUUID string
-	OrgUUID     string
+	Email            string
+	AccountUUID      string
+	OrgUUID          string
+	RateLimitTier    string // organization.rate_limit_tier, e.g. "default_claude_max_20x"
+	SubscriptionType string // organization_type mapped, e.g. "max"
+}
+
+// orgTypeToSubscription mirrors Claude Code's organization_type -> subscription
+// map (its `dhe`).
+var orgTypeToSubscription = map[string]string{
+	"claude_max":        "max",
+	"claude_pro":        "pro",
+	"claude_enterprise": "enterprise",
+	"claude_team":       "team",
 }
 
 func fetchProfileEmail(accessToken string) (string, error) {
@@ -70,7 +83,9 @@ func fetchProfile(accessToken string) (oauthProfile, error) {
 			EmailAddress string `json:"email_address"`
 		} `json:"account"`
 		Organization struct {
-			UUID string `json:"uuid"`
+			UUID             string `json:"uuid"`
+			OrganizationType string `json:"organization_type"`
+			RateLimitTier    string `json:"rate_limit_tier"`
 		} `json:"organization"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -80,7 +95,13 @@ func fetchProfile(accessToken string) (oauthProfile, error) {
 	if email == "" {
 		email = p.Account.EmailAddress
 	}
-	return oauthProfile{Email: email, AccountUUID: p.Account.UUID, OrgUUID: p.Organization.UUID}, nil
+	return oauthProfile{
+		Email:            email,
+		AccountUUID:      p.Account.UUID,
+		OrgUUID:          p.Organization.UUID,
+		RateLimitTier:    p.Organization.RateLimitTier,
+		SubscriptionType: orgTypeToSubscription[p.Organization.OrganizationType],
+	}, nil
 }
 
 // jwtEmail best-effort extracts an email claim if the token is a JWT.

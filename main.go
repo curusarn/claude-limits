@@ -36,6 +36,8 @@ func main() {
 		switch args[0] {
 		case "add", "add-account":
 			os.Exit(cmdAdd(args[1:]))
+		case "login":
+			os.Exit(cmdLogin(args[1:]))
 		case "remove-account", "remove":
 			os.Exit(cmdRemoveAccount(args[1:]))
 		case "accounts":
@@ -61,14 +63,24 @@ func printHelp() {
   claude-limits            show usage for every account you've added, plus the
                            account this machine is logged into right now
   claude-limits add        add the account this machine is CURRENTLY logged into
+  claude-limits login      add an account by logging into your Claude
+                           subscription in the browser (no need to switch Claude
+                           Code to it first; use --console for an API account)
   claude-limits switch     show the limits, then switch Claude Code to another
                            added account (arrow keys, or pass the email) - no
                            browser login
 
 Add your accounts one at a time: run 'add', switch Claude Code to the next
-account, run 'add' again. They accumulate and each stays tracked forever - the
-tool refreshes a switched-away account's token on its own, and reads the one
-you're currently on live from Claude Code (so it never fights it).
+account, run 'add' again. Or run 'login' to add an account through a browser
+login without switching Claude Code to it at all. They accumulate and each stays
+tracked forever - the tool refreshes a switched-away account's token on its own,
+and reads the one you're currently on live from Claude Code (so it never fights
+it).
+
+  claude-limits login --manual    browser login on a headless/SSH host: paste
+                                  the code instead of catching it locally
+  claude-limits login --console   log into an Anthropic Console (API) account
+                                  instead of a Claude subscription
 
   claude-limits --json         machine-readable output
   claude-limits --fresh        bypass the on-disk cache

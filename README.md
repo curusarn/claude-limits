@@ -44,6 +44,23 @@ tracked. Run out of A's limit, switch Claude Code to B, run `add` again, B is
 tracked too. Keep going until all your accounts are in. No per-account
 copy-pasting, no tokens to manage. Each account, once added, shows forever.
 
+Prefer not to switch Claude Code around just to add accounts? Run `login`
+instead: it opens a Claude browser login, catches the result on a local
+callback, and adds that account - even one you've never logged into here.
+
+```sh
+claude-limits login           # add a Claude subscription account via a browser login
+claude-limits login --manual  # headless/SSH: paste the code instead of catching it locally
+claude-limits login --console # log into an Anthropic Console (API) account instead
+```
+
+`login` defaults to the Claude **subscription** login (Pro/Max) - the accounts
+whose limits this tool is about. Pass `--console` for an Anthropic Console
+(API/billing) account.
+
+`login` mints its own token family, so it never touches or races your Claude
+Code login; the account is stored and self-refreshed like any other.
+
 ```sh
 claude-limits switch                              # switch Claude Code to another added account (no browser login)
 claude-limits --json                              # machine-readable
