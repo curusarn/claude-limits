@@ -28,9 +28,12 @@ error nobody saw coming. The 100% Fable bar above is real.)
 ## Install
 
 ```sh
-go build -o claude-limits .   # single static binary, zero dependencies
-cp claude-limits ~/.local/bin/
+brew install curusarn/tap/claude-limits
 ```
+
+Or grab a prebuilt binary (macOS/Linux, amd64/arm64) from the
+[releases page](https://github.com/curusarn/claude-limits/releases), or build
+from source with `go install github.com/curusarn/claude-limits@latest`.
 
 ## The one command you need
 
