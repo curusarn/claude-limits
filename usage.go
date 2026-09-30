@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -30,8 +31,9 @@ const usageURL = "https://api.anthropic.com/api/oauth/usage"
 // httpError carries the status code so callers can react to 401 (refresh) vs
 // 429 (serve stale cache) differently.
 type httpError struct {
-	status int
-	msg    string
+	status     int
+	msg        string
+	retryAfter time.Duration // from a 429's Retry-After header, when given
 }
 
 func (e *httpError) Error() string { return e.msg }
@@ -125,7 +127,7 @@ func fetchUsage(accessToken string) (*UsageResponse, []byte, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != 200 {
-		return nil, nil, &httpError{resp.StatusCode, fmt.Sprintf("usage API: HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))}
+		return nil, nil, &httpError{resp.StatusCode, fmt.Sprintf("usage API: HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200)), parseRetryAfter(resp.Header.Get("Retry-After"))}
 	}
 	var u UsageResponse
 	if err := json.Unmarshal(raw, &u); err != nil {
@@ -139,6 +141,62 @@ func fetchUsage(accessToken string) (*UsageResponse, []byte, error) {
 type cacheEntry struct {
 	FetchedAt time.Time       `json:"fetched_at"`
 	Response  json.RawMessage `json:"response"`
+	// Set after a 429: no live fetch for this account until Until, even with
+	// --fresh; the last-good response is served instead. Cleared on success.
+	Backoff *backoff `json:"backoff,omitempty"`
+}
+
+type backoff struct {
+	Until    time.Time `json:"until"`
+	Failures int       `json:"failures"`
+}
+
+// Exponential backoff after consecutive 429s: 2m, 4m, 8m, 16m, then 30m. A
+// longer Retry-After wins.
+const (
+	backoffBase = 2 * time.Minute
+	backoffMax  = 30 * time.Minute
+)
+
+func backoffDelay(failures int, retryAfter time.Duration) time.Duration {
+	d := backoffBase
+	for i := 1; i < failures && d < backoffMax; i++ {
+		d *= 2
+	}
+	d = min(d, backoffMax)
+	return max(d, retryAfter)
+}
+
+func parseRetryAfter(v string) time.Duration {
+	if v == "" {
+		return 0
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return max(time.Until(t), 0)
+	}
+	return 0
+}
+
+// recordRateLimit starts (or extends) an account's backoff, keeping its
+// last-good response.
+func recordRateLimit(name string, retryAfter time.Duration) *backoff {
+	e := readCache(name)
+	if e == nil {
+		e = &cacheEntry{}
+	}
+	failures := 1
+	if e.Backoff != nil {
+		failures = e.Backoff.Failures + 1
+	}
+	e.Backoff = &backoff{Until: time.Now().Add(backoffDelay(failures, retryAfter)), Failures: failures}
+	if err := os.MkdirAll(cacheDir(), 0o700); err == nil {
+		b, _ := json.Marshal(e)
+		_ = atomicWrite(filepath.Join(cacheDir(), name+".json"), b, 0o600)
+	}
+	return e.Backoff
 }
 
 func cacheDir() string {
@@ -182,19 +240,22 @@ func cacheTTL() time.Duration {
 // Email is the account's verified identity (from the API, see identity.go);
 // when it's empty the account is UNRESOLVED and Ref names the config entry.
 type AccountResult struct {
-	Email      string         `json:"email,omitempty"`
-	Ref        string         `json:"ref,omitempty"` // non-identity handle for error display only
-	Tier       string         `json:"tier,omitempty"`
-	Source     string         `json:"source"`
-	FetchedAt  time.Time      `json:"fetched_at"`
-	Stale      bool           `json:"stale"` // served from cache past TTL because live fetch failed
-	Cached     bool           `json:"cached"`
-	Err        string         `json:"error,omitempty"`
-	Active     bool           `json:"active"`  // the login this machine holds right now (read live)
-	Unadded    bool           `json:"unadded"` // the current login, not yet `add`ed (display-only)
-	Limits     []UsageLimit   `json:"limits,omitempty"`
-	ExtraUsage *ExtraUsage    `json:"extra_usage,omitempty"`
-	Raw        *UsageResponse `json:"-"`
+	Email     string    `json:"email,omitempty"`
+	Ref       string    `json:"ref,omitempty"` // non-identity handle for error display only
+	Tier      string    `json:"tier,omitempty"`
+	Source    string    `json:"source"`
+	FetchedAt time.Time `json:"fetched_at"`
+	Stale     bool      `json:"stale"` // served from cache past TTL because live fetch failed
+	// The usage API rate-limited this account; no live fetch before RetryAt.
+	RateLimited bool           `json:"rate_limited,omitempty"`
+	RetryAt     *time.Time     `json:"retry_at,omitempty"`
+	Cached      bool           `json:"cached"`
+	Err         string         `json:"error,omitempty"`
+	Active      bool           `json:"active"`  // the login this machine holds right now (read live)
+	Unadded     bool           `json:"unadded"` // the current login, not yet `add`ed (display-only)
+	Limits      []UsageLimit   `json:"limits,omitempty"`
+	ExtraUsage  *ExtraUsage    `json:"extra_usage,omitempty"`
+	Raw         *UsageResponse `json:"-"`
 }
 
 // refLabel is what to call an account whose identity we cannot verify - a
@@ -233,15 +294,27 @@ func collect(acc Account, cur localLogin, fresh bool) AccountResult {
 		}
 	}
 	res.Email = email
-	if ce := readCache(email); ce != nil && !fresh && time.Since(ce.FetchedAt) < cacheTTL() {
+	ce := readCache(email)
+	if ce != nil && !fresh && time.Since(ce.FetchedAt) < cacheTTL() {
 		if u := decodeCached(ce); u != nil {
 			res.fill(u, ce.FetchedAt, true, false)
 			return res
 		}
 	}
+	// Backing off after a 429: don't ask again yet, not even for --fresh.
+	if ce != nil && ce.Backoff != nil && time.Now().Before(ce.Backoff.Until) {
+		res.rateLimited(ce.Backoff.Until)
+		res.applyStaleCache(email)
+		return res
+	}
 	u, raw, err := fetchUsageActive(acc, creds, active)
 	if err != nil {
-		res.Err = err.Error()
+		var he *httpError
+		if errors.As(err, &he) && he.status == 429 {
+			res.rateLimited(recordRateLimit(email, he.retryAfter).Until)
+		} else {
+			res.Err = err.Error()
+		}
 		res.applyStaleCache(email)
 		return res
 	}
@@ -266,6 +339,12 @@ func fetchUsageActive(acc Account, creds *Creds, active bool) (*UsageResponse, [
 		u, raw, err = fetchUsage(creds.AccessToken)
 	}
 	return u, raw, err
+}
+
+func (r *AccountResult) rateLimited(until time.Time) {
+	r.RateLimited = true
+	r.RetryAt = &until
+	r.Err = "usage API rate limit: retrying after " + until.Local().Format("15:04")
 }
 
 func (r *AccountResult) fill(u *UsageResponse, at time.Time, cached, stale bool) {

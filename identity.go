@@ -74,7 +74,7 @@ func fetchProfile(accessToken string) (oauthProfile, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != 200 {
-		return oauthProfile{}, &httpError{resp.StatusCode, fmt.Sprintf("profile API: HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))}
+		return oauthProfile{}, &httpError{resp.StatusCode, fmt.Sprintf("profile API: HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200)), 0}
 	}
 	var p struct {
 		Account struct {
