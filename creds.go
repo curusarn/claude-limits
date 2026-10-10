@@ -258,6 +258,12 @@ type keychainBlob struct {
 // each token via the API (identity.go), so a revoked orphan simply fails to
 // resolve and is skipped, never guessed and never surfaced as an error account.
 func readClaudeCodeCandidates() []*Creds {
+	if !usesKeychain() { // Linux, or a login helper: the one credentials file
+		if c := parseClaudeCodeBlob(readLoginFile()); c != nil {
+			return []*Creds{c}
+		}
+		return nil
+	}
 	var out []*Creds
 	seen := map[string]bool{}
 	add := func(c *Creds) {

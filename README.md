@@ -195,6 +195,19 @@ The dir path must be spelled exactly as you'll set `CLAUDE_CONFIG_DIR`
 dir starts empty - no settings, skills, MCP servers or onboarding - so Claude
 Code walks through first-run setup there.
 
+## Linux and remote hosts
+
+On Linux, Claude Code keeps its login in `~/.claude/.credentials.json` (or
+`$CLAUDE_CONFIG_DIR/.credentials.json`), and claude-limits reads and switches
+that file; running sessions follow on their next request. `place` needs the
+macOS keychain.
+
+`CLAUDE_LIMITS_LOGIN_HELPER` lets claude-limits run as a different user than
+Claude Code: it names a command that gets `read` (print the credentials JSON),
+`write` (credentials JSON on stdin) or `account` (oauthAccount JSON on stdin).
+hyperfocus-host uses it so the store of every added account stays under the
+daemon's user while the agents' user holds only the active login.
+
 ## The API, verified against the real endpoints
 
 - Identity: `GET https://api.anthropic.com/api/oauth/profile` returns the

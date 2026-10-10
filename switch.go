@@ -307,15 +307,25 @@ func cmdSwitch(args []string) int {
 		return 1
 	}
 
-	if err := writeKeychainCreds(creds); err != nil {
-		fmt.Fprintln(os.Stderr, "error: NOT switched -", err)
-		return 1
-	}
-	if err := syncCredentialsFile(defaultConfigDir(), creds); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: keychain switched but %s/.credentials.json not updated (%v) - running sessions follow only at their next token refresh\n", defaultConfigDir(), err)
-	}
-	if err := updateOauthAccount(claudeJSONPath(), prof); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: keychain switched but ~/.claude.json not updated (%v) - /status may show the old email for up to 24h\n", err)
+	if usesKeychain() {
+		if err := writeKeychainCreds(creds); err != nil {
+			fmt.Fprintln(os.Stderr, "error: NOT switched -", err)
+			return 1
+		}
+		if err := syncCredentialsFile(defaultConfigDir(), creds); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: keychain switched but %s/.credentials.json not updated (%v) - running sessions follow only at their next token refresh\n", defaultConfigDir(), err)
+		}
+		if err := updateOauthAccount(claudeJSONPath(), prof); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: keychain switched but ~/.claude.json not updated (%v) - /status may show the old email for up to 24h\n", err)
+		}
+	} else {
+		if err := writeLoginFile(creds); err != nil {
+			fmt.Fprintln(os.Stderr, "error: NOT switched -", err)
+			return 1
+		}
+		if err := setLoginAccount(prof); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: switched but ~/.claude.json not updated (%v) - /status may show the old email for up to 24h\n", err)
+		}
 	}
 	fmt.Printf("switched Claude Code to %s\n", target)
 	fmt.Fprintln(os.Stderr, "New `claude` sessions use it right away; running ones from their next request")
