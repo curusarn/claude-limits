@@ -24,7 +24,15 @@ package main
 //     x-organization-uuid. We rewrite those three fields and drop
 //     profileFetchedAt so it refetches on next start.
 //   - ~/.claude/.credentials.json is a plaintext FALLBACK, written only when the
-//     keychain write fails; it is not a mirror. Not touched here.
+//     keychain write fails; it is not a mirror. But while it EXISTS, a running
+//     session (2.1.296) re-reads credentials before a request only when the
+//     file's mtime changed, so a keychain-only switch reaches it at its next
+//     refresh (up to ~8 h). Measured 2026-10-10 in a scratch config dir: with
+//     no file the running session moved within 30 s; with the file it stayed
+//     until the file was rewritten, then moved on its next request. So when
+//     the file exists we rewrite its claudeAiOauth too (syncCredentialsFile).
+//   - the keychain item is Claude Code's whole secure storage (claudeAiOauth,
+//     mcpOAuth, ...): we replace claudeAiOauth only.
 
 import (
 	"encoding/hex"
@@ -92,12 +100,19 @@ func readKeychainItemSvc(svc, acct string) *Creds {
 func writeKeychainCreds(c *Creds) error { return writeKeychainCredsSvc(keychainSvc, c) }
 
 // writeKeychainCredsSvc is writeKeychainCreds for any service (a config dir's).
+// Only claudeAiOauth is replaced: the item is Claude Code's whole secure
+// storage, and its other keys (mcpOAuth: MCP servers' OAuth logins) stay.
 func writeKeychainCredsSvc(svc string, c *Creds) error {
-	blob := keychainBlobJSON(c)
-	cmdLine := fmt.Sprintf("add-generic-password -U -a %q -s %q -X %q\n",
-		keychainAccountName(), svc, hex.EncodeToString(blob))
-	cmd := exec.Command("security", "-i")
-	cmd.Stdin = strings.NewReader(cmdLine)
+	blob := mergeClaudeAiOauth(readKeychainRaw(svc, keychainAccountName()), c)
+	payload := hex.EncodeToString(blob)
+	cmdLine := fmt.Sprintf("add-generic-password -U -a %q -s %q -X %q\n", keychainAccountName(), svc, payload)
+	var cmd *exec.Cmd
+	if len(cmdLine) <= 4032 { // Claude Code's own limit for `security -i` input
+		cmd = exec.Command("security", "-i")
+		cmd.Stdin = strings.NewReader(cmdLine)
+	} else {
+		cmd = exec.Command("security", "add-generic-password", "-U", "-a", keychainAccountName(), "-s", svc, "-X", payload)
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("security add-generic-password: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -107,6 +122,55 @@ func writeKeychainCredsSvc(svc string, c *Creds) error {
 		return errors.New("keychain write did not stick (read-back mismatch)")
 	}
 	return nil
+}
+
+// readKeychainRaw returns one keychain item's JSON as stored (nil if absent).
+func readKeychainRaw(svc, acct string) []byte {
+	out, err := exec.Command("security", "find-generic-password", "-s", svc, "-a", acct, "-w").Output()
+	if err != nil {
+		return nil
+	}
+	return []byte(strings.TrimSpace(string(out)))
+}
+
+// mergeClaudeAiOauth returns Claude Code's secure-storage JSON with only
+// claudeAiOauth set to c, every other key kept (unreadable JSON starts fresh).
+func mergeClaudeAiOauth(existing []byte, c *Creds) []byte {
+	m := map[string]json.RawMessage{}
+	if len(existing) > 0 && json.Unmarshal(existing, &m) != nil {
+		m = map[string]json.RawMessage{}
+	}
+	var fresh map[string]json.RawMessage
+	_ = json.Unmarshal(keychainBlobJSON(c), &fresh)
+	m["claudeAiOauth"] = fresh["claudeAiOauth"]
+	b, _ := json.Marshal(m)
+	return b
+}
+
+// syncCredentialsFile puts c into dir/.credentials.json too, when that file
+// exists. It is Claude Code's fallback copy, written when a keychain write
+// failed, and while it exists a RUNNING session watches only its mtime: a
+// keychain-only switch reaches it at its next token refresh (up to ~8 h).
+// Rewriting the file makes running sessions re-read on their next request
+// (verified in Claude Code 2.1.296, 2026-10-10).
+func syncCredentialsFile(dir string, c *Creds) error {
+	path := filepath.Join(dir, ".credentials.json")
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return atomicWrite(path, mergeClaudeAiOauth(raw, c), 0o600)
+}
+
+func defaultConfigDir() string {
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return d
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude")
 }
 
 func claudeJSONPath() string {
@@ -247,12 +311,15 @@ func cmdSwitch(args []string) int {
 		fmt.Fprintln(os.Stderr, "error: NOT switched -", err)
 		return 1
 	}
+	if err := syncCredentialsFile(defaultConfigDir(), creds); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: keychain switched but %s/.credentials.json not updated (%v) - running sessions follow only at their next token refresh\n", defaultConfigDir(), err)
+	}
 	if err := updateOauthAccount(claudeJSONPath(), prof); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: keychain switched but ~/.claude.json not updated (%v) - /status may show the old email for up to 24h\n", err)
 	}
 	fmt.Printf("switched Claude Code to %s\n", target)
-	fmt.Fprintln(os.Stderr, "New `claude` sessions use it right away. Sessions already running move over")
-	fmt.Fprintln(os.Stderr, "at their next token check (at the latest when their access token expires).")
+	fmt.Fprintln(os.Stderr, "New `claude` sessions use it right away; running ones from their next request")
+	fmt.Fprintln(os.Stderr, "(one waiting at a usage limit needs a nudge: a new message, or a restart).")
 	return 0
 }
 

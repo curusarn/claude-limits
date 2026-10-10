@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -125,4 +126,39 @@ func TestLiveRefreshCarriesScopes(t *testing.T) {
 		t.Fatal("refresh response carried no scope")
 	}
 	t.Logf("scopes: %v", c.Scopes)
+}
+
+func TestMergeClaudeAiOauthKeepsOtherKeys(t *testing.T) {
+	c := &Creds{AccessToken: "new", RefreshToken: "r", Scopes: []string{"user:inference"}}
+	got := mergeClaudeAiOauth([]byte(`{"claudeAiOauth":{"accessToken":"old"},"mcpOAuth":{"srv":{"accessToken":"m"}}}`), c)
+	var m map[string]map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["claudeAiOauth"]["accessToken"] != "new" || m["mcpOAuth"]["srv"] == nil {
+		t.Fatalf("got %s", got)
+	}
+	if fresh := mergeClaudeAiOauth([]byte("not json"), c); parseClaudeCodeBlob(fresh).AccessToken != "new" {
+		t.Fatalf("garbage not replaced: %s", fresh)
+	}
+}
+
+func TestSyncCredentialsFileOnlyWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	c := &Creds{AccessToken: "new", RefreshToken: "r"}
+	if err := syncCredentialsFile(dir, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".credentials.json")); !os.IsNotExist(err) {
+		t.Fatal("created a credentials file that wasn't there")
+	}
+	p := filepath.Join(dir, ".credentials.json")
+	os.WriteFile(p, []byte(`{"claudeAiOauth":{"accessToken":"old"},"mcpOAuth":{"x":1}}`), 0o600)
+	if err := syncCredentialsFile(dir, c); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if got := parseClaudeCodeBlob(b); got.AccessToken != "new" || !strings.Contains(string(b), "mcpOAuth") {
+		t.Fatalf("got %s", b)
+	}
 }
