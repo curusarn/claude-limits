@@ -72,9 +72,14 @@ func keychainBlobJSON(c *Creds) []byte {
 	return b
 }
 
-// readKeychainItem reads one keychain item by account name (nil if absent).
-func readKeychainItem(acct string) *Creds {
-	out, err := exec.Command("security", "find-generic-password", "-s", keychainSvc, "-a", acct, "-w").Output()
+// readKeychainItem reads one item of Claude Code's default keychain service by
+// account name (nil if absent).
+func readKeychainItem(acct string) *Creds { return readKeychainItemSvc(keychainSvc, acct) }
+
+// readKeychainItemSvc reads one keychain item by service and account name (nil
+// if absent).
+func readKeychainItemSvc(svc, acct string) *Creds {
+	out, err := exec.Command("security", "find-generic-password", "-s", svc, "-a", acct, "-w").Output()
 	if err != nil {
 		return nil
 	}
@@ -84,17 +89,20 @@ func readKeychainItem(acct string) *Creds {
 // writeKeychainCreds updates (-U) Claude Code's keychain item in place, the
 // same way Claude Code does it: the command on `security -i` stdin, payload as
 // hex (-X) so quoting can't bite.
-func writeKeychainCreds(c *Creds) error {
+func writeKeychainCreds(c *Creds) error { return writeKeychainCredsSvc(keychainSvc, c) }
+
+// writeKeychainCredsSvc is writeKeychainCreds for any service (a config dir's).
+func writeKeychainCredsSvc(svc string, c *Creds) error {
 	blob := keychainBlobJSON(c)
 	cmdLine := fmt.Sprintf("add-generic-password -U -a %q -s %q -X %q\n",
-		keychainAccountName(), keychainSvc, hex.EncodeToString(blob))
+		keychainAccountName(), svc, hex.EncodeToString(blob))
 	cmd := exec.Command("security", "-i")
 	cmd.Stdin = strings.NewReader(cmdLine)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("security add-generic-password: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	// read back: the write must be what Claude Code will see
-	got := readKeychainItem(keychainAccountName())
+	got := readKeychainItemSvc(svc, keychainAccountName())
 	if got == nil || got.AccessToken != c.AccessToken {
 		return errors.New("keychain write did not stick (read-back mismatch)")
 	}
@@ -160,7 +168,7 @@ func cmdSwitch(args []string) int {
 	}
 	var emails []string
 	for _, a := range accs {
-		if a.Email != "" && !a.Unadded {
+		if a.Email != "" && !a.Unadded && a.Dir == "" {
 			emails = append(emails, a.Email)
 		}
 	}
@@ -198,6 +206,12 @@ func cmdSwitch(args []string) int {
 		fmt.Fprintf(os.Stderr, "error: %q is not an added account (see `claude-limits accounts`)\n", target)
 		return 1
 	}
+	for _, a := range accs {
+		if a.Email == target && a.Dir != "" {
+			fmt.Fprintf(os.Stderr, "error: %s is placed in %s (sessions there own its login) - `claude-limits unplace %s` first\n", target, a.Dir, target)
+			return 1
+		}
+	}
 	if target == cur.email {
 		fmt.Printf("Claude Code is already logged in as %s\n", target)
 		return 0
@@ -219,44 +233,14 @@ func cmdSwitch(args []string) int {
 	}
 	// Never write an unverified token into Claude Code's login: prove the pair
 	// is alive and really is this account, and pick up its ids for ~/.claude.json.
-	prof, err := fetchProfile(creds.AccessToken)
-	if err != nil && isHTTPStatus(err, 401) && creds.RefreshToken != "" {
-		if rerr := refreshCreds(creds); rerr == nil {
-			if werr := writeStoredCreds(target, creds); werr != nil {
-				fmt.Fprintf(os.Stderr, "error: CRITICAL: token rotated but could not be saved: %v\n", werr)
-				return 1
-			}
-			prof, err = fetchProfile(creds.AccessToken)
-		}
+	var fallbackScopes []string
+	if cur.creds != nil {
+		fallbackScopes = cur.creds.Scopes
 	}
+	prof, err := liveProfile(target, creds, fallbackScopes)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: NOT switched - %s's stored token does not work (%v). Log into it once with `claude` and run `claude-limits add`.\n", target, err)
+		fmt.Fprintln(os.Stderr, "error: NOT switched -", err)
 		return 1
-	}
-	if prof.Email != target {
-		fmt.Fprintf(os.Stderr, "error: NOT switched - stored token for %s belongs to %q\n", target, prof.Email)
-		return 1
-	}
-	// Claude Code gates refresh, profile fetch and org resolution on the scopes
-	// list, so never hand it an empty one. A pair stored before scopes were
-	// kept gets them from a refresh (the token response carries `scope`);
-	// failing that, the outgoing login's scopes (same client, same grant).
-	if len(creds.Scopes) == 0 {
-		if err := refreshCreds(creds); err != nil {
-			fmt.Fprintf(os.Stderr, "error: NOT switched - %s: %v\n", target, err)
-			return 1
-		}
-		if err := writeStoredCreds(target, creds); err != nil {
-			fmt.Fprintf(os.Stderr, "error: CRITICAL: token rotated but could not be saved: %v\n", err)
-			return 1
-		}
-		if len(creds.Scopes) == 0 && cur.creds != nil {
-			creds.Scopes = cur.creds.Scopes
-		}
-		if len(creds.Scopes) == 0 {
-			fmt.Fprintf(os.Stderr, "error: NOT switched - no OAuth scopes known for %s; log into it once with `claude` and run `claude-limits add`\n", target)
-			return 1
-		}
 	}
 
 	if err := writeKeychainCreds(creds); err != nil {

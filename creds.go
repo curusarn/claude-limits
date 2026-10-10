@@ -48,6 +48,11 @@ type Account struct {
 	Source string `json:"source"`          // "stored" (added via `add`/paste) | "op" (seeded from 1Password)
 	OpRef  string `json:"ref,omitempty"`   // op://vault/item/field for source "op" (seeds the stored file once)
 
+	// Dir is the Claude Code config dir (CLAUDE_CONFIG_DIR) this account is
+	// placed in (`place`): its pair lives only in that dir's keychain item,
+	// read live and never refreshed here (place.go).
+	Dir string `json:"dir,omitempty"`
+
 	// LegacyName is a pre-email-identity typed alias, kept only until migration
 	// re-derives the real email from the token (or flags the entry for re-import).
 	LegacyName string `json:"name,omitempty"`
@@ -496,6 +501,10 @@ func applyRefresh(c *Creds, rr refreshResponse) {
 //     pair) so a switched-away account stays alive. Past its ~10-day refresh
 //     window it lapses with a clear "switch to it and run add" message.
 func getCreds(acc Account, cur localLogin) (*Creds, bool, error) {
+	if acc.Dir != "" { // placed: Claude Code in that dir owns it, like the default login
+		c, err := readPlacedCreds(acc)
+		return c, true, err
+	}
 	if acc.Email != "" && acc.Email == cur.email && cur.creds != nil {
 		if !acc.Unadded { // persist the fresh pair for when this login goes dormant
 			_ = writeStoredCreds(acc.Email, cur.creds)

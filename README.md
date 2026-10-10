@@ -166,6 +166,35 @@ will rotate each other out (single-use refresh tokens) - in that case just run
 (Configs from older versions - a `keychain` placeholder entry, or the typed
 `{"name": ...}` alias format - migrate automatically on the next run.)
 
+## Several accounts at once: one config dir per account
+
+`switch` changes the one login every `claude` shares, and sessions that are
+already running only follow at their next token refresh (up to ~8 h later). To
+run sessions on different accounts side by side, give an account its own
+Claude Code config dir:
+
+```sh
+claude-limits place claude@example.com ~/.claude-accounts/claude@example.com
+CLAUDE_CONFIG_DIR=~/.claude-accounts/claude@example.com claude   # runs on that account
+claude-limits unplace claude@example.com   # move it back (stop its sessions first)
+```
+
+With `CLAUDE_CONFIG_DIR` set, Claude Code keeps the login in its own keychain
+item (`Claude Code-credentials-` + the first 8 hex of the dir path's sha256),
+so the default login and every other dir keep theirs. `place` **moves** the
+account's token pair there: it writes the pair into that item (no browser
+login), names the account in the dir's `.claude.json`, and deletes the
+tool's stored copy. From then on the sessions in that dir own the token's
+rotation, and `claude-limits` reads it live and never refreshes it - like the
+default login - so two writers never race each other out of the token family.
+One account lives in one place: `place` refuses the default login or an
+account placed elsewhere, and `switch` refuses a placed account.
+
+The dir path must be spelled exactly as you'll set `CLAUDE_CONFIG_DIR`
+(absolute, no trailing slash): Claude Code hashes the string as given. A new
+dir starts empty - no settings, skills, MCP servers or onboarding - so Claude
+Code walks through first-run setup there.
+
 ## The API, verified against the real endpoints
 
 - Identity: `GET https://api.anthropic.com/api/oauth/profile` returns the
