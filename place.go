@@ -135,6 +135,10 @@ func writeDirOauthAccount(dir string, p oauthProfile) error {
 }
 
 func cmdPlace(args []string) int {
+	if !usesKeychain() {
+		fmt.Fprintln(os.Stderr, "error: place/unplace need the macOS keychain (one config dir per account); not available here")
+		return 1
+	}
 	fs := flag.NewFlagSet("place", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: claude-limits place EMAIL DIR   (then run: CLAUDE_CONFIG_DIR=DIR claude)")
@@ -235,6 +239,10 @@ func finishPlace(accs []Account, idx int, dir string) int {
 }
 
 func cmdUnplace(args []string) int {
+	if !usesKeychain() {
+		fmt.Fprintln(os.Stderr, "error: place/unplace need the macOS keychain (one config dir per account); not available here")
+		return 1
+	}
 	fs := flag.NewFlagSet("unplace", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: claude-limits unplace EMAIL   (logs its dir out; stop the sessions there first)")
