@@ -19,6 +19,7 @@ package main
 // self-refreshing its stored token. See getCreds in creds.go.
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -229,8 +230,15 @@ func cmdAdd(args []string) int {
 
 	// Secondary path: import a token blob (cross-machine). Triggered explicitly
 	// by --token/--from-op, or implicitly when a blob is piped in.
-	if *token || *fromOp != "" || !stdinIsTTY() {
-		return addFromToken(accs, *fromOp)
+	if *token || *fromOp != "" {
+		return addFromToken(accs, *fromOp, nil)
+	}
+	// A piped blob imports too; an empty stdin (a daemon's, ssh without -t)
+	// means nothing was piped: capture the current login.
+	if !stdinIsTTY() {
+		if raw, _ := io.ReadAll(os.Stdin); len(bytes.TrimSpace(raw)) > 0 {
+			return addFromToken(accs, "", raw)
+		}
 	}
 
 	// Primary path: capture this machine's current login.
@@ -274,13 +282,15 @@ func cmdAdd(args []string) int {
 
 // addFromToken imports an account from another machine: a blob from
 // `claude-limits extract` over there, read on stdin (or a 1Password field).
-func addFromToken(accs []Account, opRef string) int {
+func addFromToken(accs []Account, opRef string, piped []byte) int {
 	var creds *Creds
 	var err error
 	source := "stored"
 	if opRef != "" {
 		source = "op"
 		creds, err = fetchOpCreds(Account{Source: "op", OpRef: opRef})
+	} else if piped != nil {
+		creds, err = parseCredsInput(piped)
 	} else {
 		if stdinIsTTY() {
 			fmt.Fprintln(os.Stderr, "Paste the blob from `claude-limits extract` on the OTHER machine, then Ctrl-D.")
