@@ -138,6 +138,8 @@ func renderAccount(r AccountResult, p palette) {
 		head += " " + p.amber + "(not added yet - run: claude-limits add)" + p.reset
 	case r.Active:
 		head += " " + p.dim + "(logged in)" + p.reset
+	case r.Dir != "":
+		head += " " + p.dim + "(in " + r.Dir + ")" + p.reset
 	case r.Email != "":
 		head += " " + p.dim + "(saved)" + p.reset
 	}

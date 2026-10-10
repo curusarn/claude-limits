@@ -251,8 +251,9 @@ type AccountResult struct {
 	RetryAt     *time.Time     `json:"retry_at,omitempty"`
 	Cached      bool           `json:"cached"`
 	Err         string         `json:"error,omitempty"`
-	Active      bool           `json:"active"`  // the login this machine holds right now (read live)
-	Unadded     bool           `json:"unadded"` // the current login, not yet `add`ed (display-only)
+	Active      bool           `json:"active"`        // the login this machine holds right now (read live)
+	Dir         string         `json:"dir,omitempty"` // placed in this CLAUDE_CONFIG_DIR (read live, never refreshed)
+	Unadded     bool           `json:"unadded"`       // the current login, not yet `add`ed (display-only)
 	Limits      []UsageLimit   `json:"limits,omitempty"`
 	ExtraUsage  *ExtraUsage    `json:"extra_usage,omitempty"`
 	Raw         *UsageResponse `json:"-"`
@@ -275,14 +276,14 @@ func refLabel(acc Account) string {
 // ALWAYS the token's API-verified identity - never a config label, so one
 // account's data can never appear under another's name.
 func collect(acc Account, cur localLogin, fresh bool) AccountResult {
-	res := AccountResult{Source: acc.Source, Email: acc.Email, Ref: refLabel(acc), Unadded: acc.Unadded}
-	creds, active, err := getCreds(acc, cur)
+	res := AccountResult{Source: acc.Source, Email: acc.Email, Ref: refLabel(acc), Unadded: acc.Unadded, Dir: acc.Dir}
+	creds, live, err := getCreds(acc, cur)
 	if err != nil {
 		res.Err = err.Error()
 		res.applyStaleCache(acc.Email) // only under a verified email; no-op when unresolved
 		return res
 	}
-	res.Active = active
+	res.Active = live && acc.Dir == ""
 	res.Tier = creds.RateLimitTier
 	email := acc.Email
 	if email == "" {
@@ -307,7 +308,7 @@ func collect(acc Account, cur localLogin, fresh bool) AccountResult {
 		res.applyStaleCache(email)
 		return res
 	}
-	u, raw, err := fetchUsageActive(acc, creds, active)
+	u, raw, err := fetchUsageActive(acc, creds, live)
 	if err != nil {
 		var he *httpError
 		if errors.As(err, &he) && he.status == 429 {

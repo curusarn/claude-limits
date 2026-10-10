@@ -44,6 +44,10 @@ func main() {
 			os.Exit(cmdAccounts())
 		case "switch":
 			os.Exit(cmdSwitch(args[1:]))
+		case "place":
+			os.Exit(cmdPlace(args[1:]))
+		case "unplace":
+			os.Exit(cmdUnplace(args[1:]))
 		case "extract": // secondary: emit this login's blob for another machine
 			os.Exit(cmdExtract(args[1:]))
 		case "help", "--help", "-h":
@@ -69,6 +73,13 @@ func printHelp() {
   claude-limits switch     show the limits, then switch Claude Code to another
                            added account (arrow keys, or pass the email) - no
                            browser login
+  claude-limits place EMAIL DIR
+                           give an added account its own Claude Code config
+                           dir: CLAUDE_CONFIG_DIR=DIR claude runs on it, while
+                           the default login and other dirs keep theirs. Its
+                           login moves there (sessions in DIR own it)
+  claude-limits unplace EMAIL
+                           move it back (logs DIR out; stop its sessions first)
 
 Add your accounts one at a time: run 'add', switch Claude Code to the next
 account, run 'add' again. Or run 'login' to add an account through a browser
@@ -187,6 +198,9 @@ func cmdAccounts() int {
 		extra := ""
 		if a.OpRef != "" {
 			extra = "  " + a.OpRef
+		}
+		if a.Dir != "" {
+			extra += "  placed in " + a.Dir
 		}
 		fmt.Printf("%-40s %s%s\n", name, a.Source, extra)
 	}
@@ -412,6 +426,10 @@ func cmdRemoveAccount(args []string) int {
 	kept := accs[:0]
 	found := false
 	for _, a := range accs {
+		if a.Email == name && a.Dir != "" {
+			fmt.Fprintf(os.Stderr, "error: %s is placed in %s - `claude-limits unplace %s` first\n", name, a.Dir, name)
+			return 1
+		}
 		if a.Email == name || (a.Email == "" && a.LegacyName == name) {
 			found = true
 			os.Remove(credsPath(a.key()))
